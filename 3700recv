@@ -1,0 +1,123 @@
+#!/usr/bin/python -u
+import sys
+import socket
+import time
+import datetime
+import select
+import json
+
+def log(string):
+  sys.stderr.write(datetime.datetime.now().strftime("%H:%M:%S.%f") + " " + string + "\n")
+  
+def initializeAckNumber(packet_sequence):
+  global ackNumber
+  ackNumber = packet_sequence
+  
+# Sort the sequence nums in dictionary
+# and print out received data
+def printReceivedData():
+  global receivedData
+  
+  for dataEntry in sorted(receivedData):
+    sys.stdout.write(receivedData[dataEntry])
+    
+# send ack back to sender
+def sendAck():
+  global ackNumber
+  
+  msg = json.dumps({"ack": ackNumber})
+  log("ABOUT TO SEND " + msg)
+  
+  if sock.sendto(msg, addr) < len(msg):
+    log("[error] unable to fully send packet")
+    
+# increment ack num by data length
+# or by 1 if it is the last packet
+def incrementAck(packet_data):
+  global ackNumber
+  
+  if len(packet_data) > 0:
+    ackNumber += len(packet_data)
+  else:
+    ackNumber = ackNumber + 1
+    
+def closeReceiver():
+  printReceivedData()
+  incrementAck("")
+  sendAck()
+  log("[completed]")
+  sys.exit(0)
+
+MSG_SIZE = 1500
+TIMEOUT = 30
+
+# Bind to localhost and an ephemeral port
+UDP_IP = "127.0.0.1"
+UDP_PORT = 0
+
+# Set up the socket
+sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM) 
+sock.bind((UDP_IP, UDP_PORT))
+sock.settimeout(TIMEOUT)
+
+# Get port we bound to
+UDP_PORT = sock.getsockname()[1]
+log("[bound] " + str(UDP_PORT))
+
+# Store the sequence numbers and 
+# corresponding data successfully received
+receivedData = {}
+
+# Keep track of the last ack number
+# to see if next segment received is
+# in order or not, start at -1
+ackNumber = -1
+
+# Now listen for packets
+while True:
+  result = sock.recvfrom(MSG_SIZE)
+
+  # If nothing is ready, we hit the timeout
+  if result:
+    (data, addr) = result
+    
+    try:
+      # Get info out of packet
+      decoded = json.loads(data)
+      packet_eof = decoded['eof']
+      packet_sequence = decoded['sequence']
+      packet_data = decoded['data']
+      
+      # If it is the first packet we get, set
+      # ack to sequence number
+      if (ackNumber == -1):
+        initializeAckNumber(packet_sequence)
+      
+      # if end of packets, close receiver
+      if (packet_eof):
+        closeReceiver()
+      
+      # If there is data, look at it and 
+      # handle accordingly
+      if (packet_data):   
+          # packet sent in order
+          if (ackNumber == packet_sequence):
+            incrementAck(packet_data)
+            log("[recv data] " + str(packet_sequence) + " (" + str(len(packet_data)) + ") ACCEPTED (in-order)")         
+            
+          # packet sent out of order
+          elif (ackNumber != packet_sequence):
+            log("[recv data] " + str(packet_sequence) + " (" + str(len(packet_data)) + ") ACCEPTED (out-of-order)")
+      
+          # store the data
+          receivedData[packet_sequence] = packet_data
+      
+          # Send an ack to the sender  
+          sendAck()
+
+    except (ValueError, KeyError, TypeError) as e:
+      log("[recv corrupt packet]")
+      raise e
+  else:
+    log("[error] timeout")
+    sys.exit(-1)

@@ -1,0 +1,173 @@
+#!/usr/bin/python -u
+import sys
+import socket
+import time
+import datetime
+import select
+import json
+
+MSG_SIZE = 1500
+DATA_SIZE = 1000
+TIMEOUT = 30
+SEQUENCE = 0
+
+DATATABLE_SEQ = 0
+DATATABLE_DATA = 1
+DATATABLE_TIMESENT = 2
+
+ACKTIMEOUT = .5
+RTO = .5
+
+# Bind to localhost and an ephemeral port
+IP_PORT = sys.argv[1]
+UDP_IP = IP_PORT[0:IP_PORT.find(":")]
+UDP_PORT = int(IP_PORT[IP_PORT.find(":")+1:])
+dest = (UDP_IP, UDP_PORT)
+
+# Set up the socket
+sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM) 
+#sock.settimeout(TIMEOUT)
+sock.settimeout(RTO)
+
+# Write message to stderr
+def log(string):
+  sys.stderr.write(datetime.datetime.now().strftime("%H:%M:%S.%f") + " " + string + "\n")
+
+def send_next_packet():
+  global SEQUENCE
+  global timeLastPacketSent
+
+  # read in data from stdin, read in data size
+  data = sys.stdin.read(DATA_SIZE)
+  
+  # if there is data, then create a message to send
+  # if successfully sent, add to unacked packet buffer
+  if (len(data) > 0):
+    msg = json.dumps({"sequence": SEQUENCE, "data": data, "ack": False, "eof": False})
+    SEQUENCE += len(data)
+  
+    if sock.sendto(msg, dest) < len(msg):
+      log("[error] unable to fully send packet")
+    else:
+      log("[send data] " + str(SEQUENCE) + " (" + str(len(data)) + ")")
+      timeLastPacketSent = time.time()
+      addToUnackedBuffer(SEQUENCE, data, timeLastPacketSent)
+    return True
+  else:
+    return False
+  
+# send the last packet to the receiver
+def sendFinalPacket():
+  global SEQUENCE
+  global timeLastPacketSent
+  
+  sock.sendto(json.dumps({"eof": True, "data": "", "sequence": SEQUENCE, "ack": False}), dest)
+  
+  # add 1 because ack num will be seq + 1
+  SEQUENCE = SEQUENCE + 1
+  
+  log("[send data] " + str(SEQUENCE) + " (0)")
+  
+  timeLastPacketSent = time.time()
+  addToUnackedBuffer(SEQUENCE, "", timeLastPacketSent)
+  
+# keep track of all unacked packets  
+def addToUnackedBuffer(SEQUENCE, data, timeSent):
+  global unAckedBuffer
+  
+  # if already in table, update the time
+  for entry in unAckedBuffer:
+    if entry[DATATABLE_SEQ] == SEQUENCE:
+      entry[DATATABLE_TIMESENT] = timeSent
+      return
+  
+  # otherwise add it
+  unAckedBuffer.append([SEQUENCE, data, timeSent])
+ 
+# once an ack is received for a packet
+# remove it from the unacked buffer
+def removeDataFromUnackedBuffer(SEQUENCE):
+  for entry in unAckedBuffer:
+    if entry[DATATABLE_SEQ] == SEQUENCE:
+      unAckedBuffer.remove(entry)
+      return
+  
+# check to see if any packets were
+# dropped by checking ack timeouts    
+def checkForAckTimeouts():
+  global timeLastPacketSent
+  
+  log("IN THE ACK TIMEOUT CHECKER")
+  for entry in unAckedBuffer:
+    # if packet dropped, resend
+    if time.time() - entry[DATATABLE_TIMESENT] >= ACKTIMEOUT:
+      # sequence number is retrieved by getting current minus
+      # the amount of data sent
+      sequenceNum = entry[DATATABLE_SEQ] - len(entry[DATATABLE_DATA])
+      
+      if len(entry[DATATABLE_DATA]) > 0:
+        msg = json.dumps({"sequence": sequenceNum, "data": entry[DATATABLE_DATA], "ack": False, "eof": False})
+      elif len(entry[DATATABLE_DATA]) == 0:
+        msg = json.dumps({"sequence": sequenceNum - 1, "data": "", "ack": False, "eof": True})
+       
+      if sock.sendto(msg, dest) < len(msg):
+        log("[error] unable to fully send packet")
+      else:
+        log("[send data] " + str(entry[DATATABLE_SEQ]) + " (" + str(len(entry[DATATABLE_DATA])) + ")")
+        timeLastPacketSent = time.time()
+        addToUnackedBuffer(entry[DATATABLE_SEQ], entry[DATATABLE_DATA], timeLastPacketSent)
+
+# keep track of unacked packets
+# seq num, data, time sent
+unAckedBuffer = []
+
+# keep track of when last packet sent
+# and received for timeout purposes
+timeLastPacketSent = -1
+timeLastPacketReceived = -1
+
+finalPacketSent = 0
+
+# Send first packet of data
+send_next_packet()
+
+# Now read in data, send packets
+while True:
+  log("ABOUT TO SLEEP")  
+  try:
+    result = sock.recvfrom(MSG_SIZE)
+
+    if result:
+      (data, addr) = result
+      timeLastPacketReceived = time.time()
+      try:
+        decoded = json.loads(data)
+  	log("received something")
+        # If there is an ack, send next packet
+        # and remove data from buffer
+        if decoded['ack'] == SEQUENCE:
+          removeDataFromUnackedBuffer(SEQUENCE)
+          log("[recv ack] " + str(SEQUENCE))
+  
+          # Try to send next packet; if no more data
+          # send final packet, if we have already sent
+          # last packet and have gotten acks for all
+          # messages, then we are done
+          if (not send_next_packet()) and (not finalPacketSent):
+            sendFinalPacket()
+            finalPacketSent = 1
+          elif finalPacketSent and len(unAckedBuffer) == 0:
+            break
+      except (ValueError, KeyError, TypeError):
+        log("[recv corrupt packet]")
+  except socket.timeout:    
+    # check to end the program
+    # or if it was a dropped message
+    if timeLastPacketReceived != -1 and time.time() - timeLastPacketReceived >= 30:    
+      log("[error] timeout")
+      sys.exit(-1)
+    elif timeLastPacketSent != -1 and time.time() - timeLastPacketSent >= 3:
+      checkForAckTimeouts()
+
+log("[completed]")
+sys.exit(0)
