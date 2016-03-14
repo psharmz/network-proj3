@@ -22,12 +22,11 @@ def printReceivedData():
     sys.stdout.write(receivedData[dataEntry])
     
 # send ack back to sender
-def sendAck():
-  global ackNumber
-  
-  msg = json.dumps({"ack": ackNumber})
+def sendAck(packetAckNumber):  
+  msg = json.dumps({"ack": packetAckNumber})
   log("ABOUT TO SEND " + msg)
   
+  #TODO: better checking here?
   if sock.sendto(msg, addr) < len(msg):
     log("[error] unable to fully send packet")
     
@@ -39,12 +38,14 @@ def incrementAck(packet_data):
   if len(packet_data) > 0:
     ackNumber += len(packet_data)
   else:
-    ackNumber = ackNumber + 1
+    ackNumber = packet_sequence + 1
     
 def closeReceiver():
+  global ackNumber
+  
   printReceivedData()
   incrementAck("")
-  sendAck()
+  sendAck(ackNumber)
   log("[completed]")
   sys.exit(0)
 
@@ -103,17 +104,16 @@ while True:
           # packet sent in order
           if (ackNumber == packet_sequence):
             incrementAck(packet_data)
-            log("[recv data] " + str(packet_sequence) + " (" + str(len(packet_data)) + ") ACCEPTED (in-order)")         
+            log("[recv data] " + str(packet_sequence) + " (" + str(len(packet_data)) + ") ACCEPTED (in-order)")
+            sendAck(ackNumber)         
             
           # packet sent out of order
           elif (ackNumber != packet_sequence):
             log("[recv data] " + str(packet_sequence) + " (" + str(len(packet_data)) + ") ACCEPTED (out-of-order)")
+            sendAck(packet_sequence + len(packet_data))
       
           # store the data
           receivedData[packet_sequence] = packet_data
-      
-          # Send an ack to the sender  
-          sendAck()
 
     except (ValueError, KeyError, TypeError) as e:
       log("[recv corrupt packet]")
