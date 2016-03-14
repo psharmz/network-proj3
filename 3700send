@@ -15,8 +15,8 @@ DATATABLE_SEQ = 0
 DATATABLE_DATA = 1
 DATATABLE_TIMESENT = 2
 
-ACKTIMEOUT = .5
-RTO = .5
+ACKTIMEOUT = 1
+RTO = 1
 
 # Bind to localhost and an ephemeral port
 IP_PORT = sys.argv[1]
@@ -26,7 +26,6 @@ dest = (UDP_IP, UDP_PORT)
 
 # Set up the socket
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM) 
-#sock.settimeout(TIMEOUT)
 sock.settimeout(RTO)
 
 # Write message to stderr
@@ -97,7 +96,7 @@ def removeDataFromUnackedBuffer(SEQUENCE):
 def checkForAckTimeouts():
   global timeLastPacketSent
   
-  log("IN THE ACK TIMEOUT CHECKER")
+  #log("IN THE ACK TIMEOUT CHECKER")
   for entry in unAckedBuffer:
     # if packet dropped, resend
     if time.time() - entry[DATATABLE_TIMESENT] >= ACKTIMEOUT:
@@ -126,7 +125,10 @@ unAckedBuffer = []
 timeLastPacketSent = -1
 timeLastPacketReceived = -1
 
+# whether or not last packet sent
 finalPacketSent = 0
+
+# whether or not receiver has closed
 
 # Send first packet of data
 send_next_packet()
@@ -142,7 +144,7 @@ while True:
       timeLastPacketReceived = time.time()
       try:
         decoded = json.loads(data)
-  	log("received something")
+  
         # If there is an ack, send next packet
         # and remove data from buffer
         if decoded['ack'] == SEQUENCE:
@@ -166,7 +168,7 @@ while True:
     if timeLastPacketReceived != -1 and time.time() - timeLastPacketReceived >= 30:    
       log("[error] timeout")
       sys.exit(-1)
-    elif timeLastPacketSent != -1 and time.time() - timeLastPacketSent >= 3:
+    elif timeLastPacketSent != -1 and time.time() - timeLastPacketSent >= ACKTIMEOUT:
       checkForAckTimeouts()
 
 log("[completed]")
