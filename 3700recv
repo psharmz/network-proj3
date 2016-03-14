@@ -101,19 +101,23 @@ while True:
       # If there is data, look at it and 
       # handle accordingly
       if (packet_data):   
-          # packet sent in order
-          if (ackNumber == packet_sequence):
-            incrementAck(packet_data)
-            log("[recv data] " + str(packet_sequence) + " (" + str(len(packet_data)) + ") ACCEPTED (in-order)")
-            sendAck(ackNumber)         
-            
-          # packet sent out of order
-          elif (ackNumber != packet_sequence):
-            log("[recv data] " + str(packet_sequence) + " (" + str(len(packet_data)) + ") ACCEPTED (out-of-order)")
+        
+          if (packet_sequence in receivedData):
+            log("[recv data] " + str(packet_sequence) + " (" + str(len(packet_data)) + ") IGNORED")
             sendAck(packet_sequence + len(packet_data))
-      
-          # store the data
-          receivedData[packet_sequence] = packet_data
+          else:
+            # packet sent in order
+            if (ackNumber == packet_sequence):
+              incrementAck(packet_data)
+              log("[recv data] " + str(packet_sequence) + " (" + str(len(packet_data)) + ") ACCEPTED (in-order)")
+              sendAck(ackNumber)
+            # packet sent out of order
+            elif (ackNumber != packet_sequence):
+              log("[recv data] " + str(packet_sequence) + " (" + str(len(packet_data)) + ") ACCEPTED (out-of-order)")
+              sendAck(packet_sequence + len(packet_data))
+        
+            # store the data
+            receivedData[packet_sequence] = packet_data
 
     except (ValueError, KeyError, TypeError) as e:
       log("[recv corrupt packet]")
