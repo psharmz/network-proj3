@@ -9,6 +9,7 @@ import json
 def log(string):
   sys.stderr.write(datetime.datetime.now().strftime("%H:%M:%S.%f") + " " + string + "\n")
   
+## set the ackNumber to the sequence num
 def initializeAckNumber(packet_sequence):
   global ackNumber
   ackNumber = packet_sequence
@@ -21,11 +22,14 @@ def printReceivedData():
   for dataEntry in sorted(receivedData):
     sys.stdout.write(receivedData[dataEntry])
     
-# send ack back to sender
+# send ack back to sender after receiving
+# the data given
 def sendAck(packetAckNumber):  
   msg = json.dumps({"ack": packetAckNumber})
   log("ABOUT TO SEND " + msg)
   
+  # if sock.sendto() is less than full size of message
+  # it means the full message didn't send
   #TODO: better checking here?
   if sock.sendto(msg, addr) < len(msg):
     log("[error] unable to fully send packet")
@@ -39,7 +43,9 @@ def incrementAck(packet_data):
     ackNumber += len(packet_data)
   else:
     ackNumber = packet_sequence + 1
-    
+
+# after getting final packet, send
+# ack and exit
 def closeReceiver():
   global ackNumber
   
@@ -49,6 +55,7 @@ def closeReceiver():
   log("[completed]")
   sys.exit(0)
 
+# set global variables
 MSG_SIZE = 1500
 TIMEOUT = 30
 
@@ -59,6 +66,8 @@ UDP_PORT = 0
 # Set up the socket
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM) 
 sock.bind((UDP_IP, UDP_PORT))
+
+# timeout set to 30 seconds
 sock.settimeout(TIMEOUT)
 
 # Get port we bound to
@@ -98,7 +107,8 @@ while True:
       if (ackNumber == -1):
         initializeAckNumber(packet_sequence)
       
-      # if end of packets, close receiver
+      # if end of packets, print out data received
+      # and close receiver
       if (packet_eof):
         closeReceiver()
       
@@ -137,4 +147,3 @@ while True:
 # ignore duplicate packets
 # Out-of-order packets are reordered or dropped
 # Missing sequence numbers indicate lost packets
-
