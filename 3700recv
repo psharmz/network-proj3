@@ -109,29 +109,38 @@ while True:
       
       # if end of packets, print out data received
       # and close receiver
-      if (packet_eof):
+      #log(str(ackNumber) + " " + str(packet_sequence))
+      if (packet_eof and ackNumber == packet_sequence):
         closeReceiver()
       
       # If there is data, look at it and 
       # handle accordingly
       if (packet_data):   
         
+          # if we get a duplicated message this could be because it was dropped
+          # check to see if ack needs to be incremented and send ack with
+          # the correct ack number for this message
           if (packet_sequence in receivedData):
             log("[recv data] " + str(packet_sequence) + " (" + str(len(packet_data)) + ") IGNORED")
             sendAck(packet_sequence + len(packet_data))
+
+	    if (ackNumber == packet_sequence):
+	      incrementAck(packet_data)  
+           
           else:
-            # packet sent in order
+            # packet sent in order, send back ack with incremented ack number
             if (ackNumber == packet_sequence):
               incrementAck(packet_data)
               log("[recv data] " + str(packet_sequence) + " (" + str(len(packet_data)) + ") ACCEPTED (in-order)")
               sendAck(ackNumber)
-            # packet sent out of order
+            # packet sent out of order, send back ack with unchanged ack number
             elif (ackNumber != packet_sequence):
               log("[recv data] " + str(packet_sequence) + " (" + str(len(packet_data)) + ") ACCEPTED (out-of-order)")
-              sendAck(packet_sequence + len(packet_data))
+              sendAck(ackNumber)
         
             # store the data
             receivedData[packet_sequence] = packet_data
+
 
     except (ValueError, KeyError, TypeError) as e:
       log("[recv corrupt packet]")
