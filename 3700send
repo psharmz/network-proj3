@@ -60,8 +60,8 @@ def log(string):
   sys.stderr.write(datetime.datetime.now().strftime("%H:%M:%S.%f") + " " + string + "\n")
 
 def send_next_packet():
-  global SEQUENCE
   global timeLastPacketSent
+  global lastPacketSentSequenceNum
 
   # read in data from stdin, read in data size
   data = sys.stdin.read(DATA_SIZE)
@@ -69,17 +69,17 @@ def send_next_packet():
   # if there is data, then create a message to send
   # if successfully sent, add to unacked packet buffer
   if (len(data) > 0):
-    msg = json.dumps({"sequence": SEQUENCE, "data": data, "ack": False, "eof": False})
+    msg = json.dumps({"sequence": lastPacketSentSequenceNum, "data": data, "ack": False, "eof": False})
     
     # increment the sequence number so we can send
     # next packet after receiving right ack
-    SEQUENCE += len(data)
+    lastPacketSentSequenceNum += len(data)
   
     if sock.sendto(msg, dest) < len(msg):
       log("[error] unable to fully send packet")
     else:
       # logs [send data] sequence_number (size of packet sent)
-      log("[send data] " + str(SEQUENCE) + " (" + str(len(data)) + ")")
+      log("[send data] " + str(lastPacketSentSequenceNum) + " (" + str(len(data)) + ")")
       
       # update time last packet was sent
       timeLastPacketSent = time.time()
@@ -87,28 +87,28 @@ def send_next_packet():
       # keep track of the packet we just sent in the unacked buffer table
       # sequence #, data, time sent, false because this is the first time
       # it is being sent
-      addToUnackedBuffer(SEQUENCE, data, timeLastPacketSent, False)
+      addToUnackedBuffer(lastPacketSentSequenceNum, data, timeLastPacketSent, False)
     return True
   else:
     return False
   
 # send the last packet to the receiver
 def sendFinalPacket():
-  global SEQUENCE
+  global lastPacketSentSequenceNum
   global timeLastPacketSent
   
-  sock.sendto(json.dumps({"eof": True, "data": "", "sequence": SEQUENCE, "ack": False}), dest)
+  sock.sendto(json.dumps({"eof": True, "data": "", "sequence": lastPacketSentSequenceNum, "ack": False}), dest)
   
   # add 1 because ack num will be seq + 1
-  SEQUENCE = SEQUENCE + 1
+  lastPacketSentSequenceNum = lastPacketSentSequenceNum + 1
   
   # log it, update time of last sent packet and add to unacked buffer
-  log("[send data] " + str(SEQUENCE) + " (0)")
+  log("[send data] " + str(lastPacketSentSequenceNum) + " (0)")
   timeLastPacketSent = time.time()
-  addToUnackedBuffer(SEQUENCE, "", timeLastPacketSent, False)
+  addToUnackedBuffer(lastPacketSentSequenceNum, "", timeLastPacketSent, False)
   
 # keep track of all unacked packets  
-def addToUnackedBuffer(SEQUENCE, data, timeSent, resent):
+def addToUnackedBuffer(seqNum, data, timeSent, resent):
   global unAckedBuffer
   
   # if already in table, update the time
@@ -117,14 +117,27 @@ def addToUnackedBuffer(SEQUENCE, data, timeSent, resent):
     # for 2 reasons
     # 1. we had to resend the packet
     # 2. we ran out of sequence numbers and it wrapped
-    if entry[DATATABLE_SEQ] == SEQUENCE:
+    if entry[DATATABLE_SEQ] == seqNum:
       # note for future: may have to add more here
+      entry[DATATABLE_DATA] = data
       entry[DATATABLE_TIMESENT] = timeSent
       entry[DATATABLE_RESENT] = resent
       return
   
   # otherwise add it
-  unAckedBuffer.append([SEQUENCE, data, timeSent, resent])
+  unAckedBuffer.append([seqNum, data, timeSent, resent])
+ 
+# update the sequence number when we get an
+# ack in order
+def updateSequenceNumber():
+  global SEQUENCE
+  
+  minSequenceNum = -1
+  for entry in unAckedBuffer:
+    if minSequenceNum == -1 or entry[DATATABLE_SEQ] < minSequenceNum:
+      minSequenceNum = entry[DATATABLE_SEQ]
+      
+  SEQUENCE = minSequenceNum      
  
 # implement slow start or congestion avoidance, update CWND accordingly 
 def updateCWND():
@@ -149,12 +162,10 @@ def updateCWNDonTimeout():
 
 # once an ack is received for a packet
 # remove it from the unacked buffer
-def removeDataFromUnackedBuffer():
-  global SEQUENCE
-  
+def removeDataFromUnackedBuffer(ackNumber):
   for entry in unAckedBuffer:
     # check if this is a new ack
-    if entry[DATATABLE_SEQ] == SEQUENCE:
+    if entry[DATATABLE_SEQ] == ackNumber:
       # if so remove the entry and update CWND
       unAckedBuffer.remove(entry)
       updateCWND()
@@ -164,8 +175,7 @@ def removeDataFromUnackedBuffer():
 # recalculate whenever we send a
 # packet and receive an ack without
 # having to retransmit
-def calculateRTO():
-  global SEQUENCE
+def calculateRTO(ackNumber):
   global RTO
   global sock
   global unAckedBuffer
@@ -176,7 +186,7 @@ def calculateRTO():
   for entry in unAckedBuffer:
     # find the entry for the ack we just received and use it to
     # calculate a new sample if it did not have to be retransmitted
-    if entry[DATATABLE_SEQ] == SEQUENCE and not entry[DATATABLE_RESENT]:
+    if entry[DATATABLE_SEQ] == ackNumber and not entry[DATATABLE_RESENT]:
       newSample = currentTime - entry[DATATABLE_TIMESENT]
       newRTT = (RTT_ALPHA * (RTO / 2)) + ((1 - RTT_ALPHA) * newSample)
       RTO = newRTT * 2
@@ -211,6 +221,25 @@ def checkForAckTimeouts():
         log("[send data] " + str(entry[DATATABLE_SEQ]) + " (" + str(len(entry[DATATABLE_DATA])) + ")")
         timeLastPacketSent = time.time()
         addToUnackedBuffer(entry[DATATABLE_SEQ], entry[DATATABLE_DATA], timeLastPacketSent, True)
+  
+# send as many packets as CWND
+# allows to go unacked      
+def sendDataPackets():
+  global unAckedBuffer
+  global CWND
+  global finalPacketSent
+  
+  diff = CWND - len(unAckedBuffer)
+  
+  while (diff > 0):
+    if send_next_packet():
+      diff = CWND - len(unAckedBuffer)
+    elif not finalPacketSent:
+      sendFinalPacket()
+      finalPacketSent = 1
+      return
+    elif finalPacketSent:
+      return
 
 # keep track of unacked packets
 # seq num, data, time sent
@@ -227,6 +256,9 @@ finalPacketSent = 0
 # Send first packet of data
 send_next_packet()
 
+# Sequence number of last packet sent
+lastPacketSentSequenceNum = 0
+
 # Now read in data, send packets
 while True:
   log("ABOUT TO SLEEP")  
@@ -238,24 +270,26 @@ while True:
       timeLastPacketReceived = time.time()
       try:
         decoded = json.loads(data)
+        ackNumber = decoded['ack']
   
-        # If there is an ack, send next packet
-        # and remove data from buffer, also update
-        # the retransmission timeout
-        if decoded['ack'] == SEQUENCE:
-          calculateRTO()
-          removeDataFromUnackedBuffer()
-          log("[recv ack] " + str(SEQUENCE))
+        # If there is an ack, send more
+        # packets and update the retransmission
+        # timeout
+        if ackNumber == SEQUENCE:
+          calculateRTO(ackNumber)
+          removeDataFromUnackedBuffer(ackNumber)
+          updateSequenceNumber()
+          log("[recv ack] " + str(ackNumber))
   
-          # Try to send next packet; if no more data
-          # send final packet, if we have already sent
-          # last packet and have gotten acks for all
-          # messages, then we are done
-          if (not send_next_packet()) and (not finalPacketSent):
-            sendFinalPacket()
-            finalPacketSent = 1
-          elif finalPacketSent and len(unAckedBuffer) == 0:
-            break
+          # Send as many data packets as the
+          # congestion window allows
+          sendDataPackets()
+          
+        # if the final packet has been sent and received
+        # break out of while loop
+        if finalPacketSent and len(unAckedBuffer) == 0:
+          break
+
       except (ValueError, KeyError, TypeError):
         log("[recv corrupt packet]")
   except socket.timeout:    
