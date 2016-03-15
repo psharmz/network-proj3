@@ -279,7 +279,7 @@ sys.exit(0)
  # control the number of unACKed packets = adjust the size of the buffer 
  
  # wnd = min(cwnd, adv_wnd);
- # effective_wnd = wnd – (last_byte_sent – last_byte_acked);
+ # effective_wnd = wnd . (last_byte_sent . last_byte_acked);
  
  
  # Upon receipt of ACK: increase cwnd
@@ -305,14 +305,14 @@ sys.exit(0)
  # cwnd =1
  # ssthresh = adv_wnd
  # Each time a segment is ACKed, cwnd++
- # Continues until…
+ # Continues until.
  # ssthresh is reached
  # Or a packet is lost
  # Slow Start is not actually slow
  # cwnd increases exponentially
  
  # cwnd grows rapidly
- # Slows down when…
+ # Slows down when.
  # cwnd >= ssthresh
  # Or a packet drops
  
