@@ -1,4 +1,3 @@
-#!/usr/bin/python -u
 import sys
 import socket
 import time
@@ -11,15 +10,34 @@ DATA_SIZE = 1000
 TIMEOUT = 30
 SEQUENCE = 0
 
-# constants for unacked buffer entries
+# for the unAckedBuffer table
+# | datatable_seq | datatable_data | datatable_timesent
+# | sequence number | data | time 
+
 DATATABLE_SEQ = 0
 DATATABLE_DATA = 1
 DATATABLE_TIMESENT = 2
-DATATABLE_RESENT = 3
 
-# set default rto to 3 seconds
+# for the unAckedBuffer table, set the max size to deal with congestion
+# this is bounded by the recievers advertized window 
+# adv_wnd: receiver advertised window
+# *** note for later. Don't know what this is right now
+# will figure it out later
+ADV_WND = 10 
+
+# cwnd:  congestion window
+# CWND = min(CWND, ADV_WIND)
+# but it is initialized to 1
+CWND = 1
+
+# ssthresh:  threshold size (used to update cwnd)
+# but initially ssthresh = adv_wnd;
+SSTHRESH = ADV_WND
+
+# acktimeout = how long we wait for an ack 
+# rto = 
+ACKTIMEOUT = 3
 RTO = 3
-RTT_ALPHA = .875
 
 # Bind to localhost and an ephemeral port
 IP_PORT = sys.argv[1]
@@ -29,14 +47,21 @@ dest = (UDP_IP, UDP_PORT)
 
 # Set up the socket
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM) 
+#sock.settimeout(TIMEOUT)
 sock.settimeout(RTO)
 
 # Write message to stderr
 def log(string):
   sys.stderr.write(datetime.datetime.now().strftime("%H:%M:%S.%f") + " " + string + "\n")
 
+# Send the next packet 
 def send_next_packet():
+  # set global variable SEQUENCE 
+  # (which is initialized at 0 but the then incremented based on the length of data)
   global SEQUENCE
+
+  # set global variable timeLastPacketSent
+  # this will be used for timeout purposes 
   global timeLastPacketSent
 
   # read in data from stdin, read in data size
@@ -46,14 +71,20 @@ def send_next_packet():
   # if successfully sent, add to unacked packet buffer
   if (len(data) > 0):
     msg = json.dumps({"sequence": SEQUENCE, "data": data, "ack": False, "eof": False})
+    
+    # increment the seq number so we can send the next packet when we are ready 
     SEQUENCE += len(data)
   
     if sock.sendto(msg, dest) < len(msg):
       log("[error] unable to fully send packet")
     else:
+      # logs [send data] sequence_number (size of packet sent)
       log("[send data] " + str(SEQUENCE) + " (" + str(len(data)) + ")")
+      # updates the time the last packet was sent 
       timeLastPacketSent = time.time()
-      addToUnackedBuffer(SEQUENCE, data, timeLastPacketSent, False)
+      # keep track of the packet we just sent for when we recieve an ack 
+      # in the UnackedBuffer table: sequence #, data size, time 
+      addToUnackedBuffer(SEQUENCE, data, timeLastPacketSent)
     return True
   else:
     return False
@@ -64,74 +95,77 @@ def sendFinalPacket():
   global timeLastPacketSent
   
   sock.sendto(json.dumps({"eof": True, "data": "", "sequence": SEQUENCE, "ack": False}), dest)
-  
-  # add 1 because ack num will be seq + 1
-  SEQUENCE = SEQUENCE + 1
-  
-  log("[send data] " + str(SEQUENCE) + " (0)")
-  
+  SEQUENCE++
   timeLastPacketSent = time.time()
-  addToUnackedBuffer(SEQUENCE, "", timeLastPacketSent, False)
+  # add 1 to sequence because receiver will
+  # send back sequence num plus one as ack
+  addToUnackedBuffer(SEQUENCE, "", timeLastPacketSent)
   
 # keep track of all unacked packets  
-def addToUnackedBuffer(SEQUENCE, data, timeSent, resent):
+def addToUnackedBuffer(SEQUENCE, data, timeSent):
   global unAckedBuffer
   
   # if already in table, update the time
   for entry in unAckedBuffer:
+    # the seq number could already be in the table for 2 reasons
+    # 1. we had to resent the packet
+    # 2. we ran out of seq num and hence it wrapped around
     if entry[DATATABLE_SEQ] == SEQUENCE:
+      ## *** note for future: we may have to add more here
       entry[DATATABLE_TIMESENT] = timeSent
-      entry[DATATABLE_RESENT] = resent
       return
   
   # otherwise add it
-  unAckedBuffer.append([SEQUENCE, data, timeSent, resent])
+  unAckedBuffer.append([SEQUENCE, data, timeSent])
+
+
+# implement slow start or congestion avoidance, update CWND accordingly 
+def updateCWND():
+  if (CWND < SSTHRESH)
+    # implement slow start
+    CWND = CWND + 1
+  else 
+    #implement congestion avoidance
+    CWND = CWND + 1/CWND
+
+# update the congestion for when we hit the ACK timeout 
+def updateCWNDonTimeout():
+  #implement multiplicative decrease
+  SSTHRESH = CWND/2
+  CWND = 1; 
  
 # once an ack is received for a packet
 # remove it from the unacked buffer
-def removeDataFromUnackedBuffer():
-  global SEQUENCE
-  
+def removeDataFromUnackedBuffer(SEQUENCE):
   for entry in unAckedBuffer:
+    # check if this is a new ack
     if entry[DATATABLE_SEQ] == SEQUENCE:
+      # if this is a new ack 
+      # remove the entry  and update CWND
       unAckedBuffer.remove(entry)
+      updateCWND()
       return
-      
-# RTO is a moving average so
-# recalculate whenever we send a
-# packet and receive an ack without
-# having to retransmit
-def calculateRTO():
-  global SEQUENCE
-  global RTO
-  global sock
-  global unAckedBuffer
-  global RTT_ALPHA
-  
-  currentTime = time.time()
-  
-  for entry in unAckedBuffer:
-    if entry[DATATABLE_SEQ] == SEQUENCE and not entry[DATATABLE_RESENT]:
-      newSample = currentTime - entry[DATATABLE_TIMESENT]
-      newRTT = (RTT_ALPHA * (RTO / 2)) + ((1 - RTT_ALPHA) * newSample)
-      RTO = newRTT * 2
-      sock.settimeout(RTO)
-      log("New RTO " + str(RTO))
-  
+
 # check to see if any packets were
 # dropped by checking ack timeouts    
 def checkForAckTimeouts():
   global timeLastPacketSent
   
+  log("IN THE ACK TIMEOUT CHECKER")
   for entry in unAckedBuffer:
     # if packet dropped, resend
-    if time.time() - entry[DATATABLE_TIMESENT] >= RTO:
+    # also update the congestion window 
+    if time.time() - entry[DATATABLE_TIMESENT] >= ACKTIMEOUT:
+      # update the congestion window
+      updateCWNDonTimeout()
       # sequence number is retrieved by getting current minus
       # the amount of data sent
       sequenceNum = entry[DATATABLE_SEQ] - len(entry[DATATABLE_DATA])
-      
+
+      # if we are not at the end of the data, send it 
       if len(entry[DATATABLE_DATA]) > 0:
         msg = json.dumps({"sequence": sequenceNum, "data": entry[DATATABLE_DATA], "ack": False, "eof": False})
+      # if we are at the end of the data, send the remaining and set eof
       elif len(entry[DATATABLE_DATA]) == 0:
         msg = json.dumps({"sequence": sequenceNum - 1, "data": "", "ack": False, "eof": True})
        
@@ -140,7 +174,8 @@ def checkForAckTimeouts():
       else:
         log("[send data] " + str(entry[DATATABLE_SEQ]) + " (" + str(len(entry[DATATABLE_DATA])) + ")")
         timeLastPacketSent = time.time()
-        addToUnackedBuffer(entry[DATATABLE_SEQ], entry[DATATABLE_DATA], timeLastPacketSent, True)
+        # *** to check later: would we have to update the sequence number if we are resending a packet??
+        addToUnackedBuffer(entry[DATATABLE_SEQ], entry[DATATABLE_DATA], timeLastPacketSent)
 
 # keep track of unacked packets
 # seq num, data, time sent
@@ -151,10 +186,8 @@ unAckedBuffer = []
 timeLastPacketSent = -1
 timeLastPacketReceived = -1
 
-# whether or not last packet sent
+# initially set finalPacketSent to false
 finalPacketSent = 0
-
-# whether or not receiver has closed
 
 # Send first packet of data
 send_next_packet()
@@ -166,7 +199,7 @@ while True:
     result = sock.recvfrom(MSG_SIZE)
 
     if result:
-      (data, addr) = result
+      (data, addr) = result     a cvc aercf ac
       timeLastPacketReceived = time.time()
       try:
         decoded = json.loads(data)
@@ -174,8 +207,7 @@ while True:
         # If there is an ack, send next packet
         # and remove data from buffer
         if decoded['ack'] == SEQUENCE:
-          calculateRTO()
-          removeDataFromUnackedBuffer()
+          removeDataFromUnackedBuffer(SEQUENCE)
           log("[recv ack] " + str(SEQUENCE))
   
           # Try to send next packet; if no more data
@@ -185,8 +217,11 @@ while True:
           if (not send_next_packet()) and (not finalPacketSent):
             sendFinalPacket()
             finalPacketSent = 1
-          elif finalPacketSent and len(unAckedBuffer) == 0:
             break
+          # *** note for later, check size of unAckedBuffer instead maybe? If size
+          # of unacked buffer is 0, then remove. 
+          elif finalPacketSent and (not unAckedBuffer):
+          #  break
       except (ValueError, KeyError, TypeError):
         log("[recv corrupt packet]")
   except socket.timeout:    
@@ -195,8 +230,93 @@ while True:
     if timeLastPacketReceived != -1 and time.time() - timeLastPacketReceived >= 30:    
       log("[error] timeout")
       sys.exit(-1)
-    elif timeLastPacketSent != -1 and time.time() - timeLastPacketSent >= RTO:
+    elif timeLastPacketSent != -1 and time.time() - timeLastPacketSent >= 3:
       checkForAckTimeouts()
+
+# Send final packet to say no more data to send
 
 log("[completed]")
 sys.exit(0)
+
+
+
+
+# personal notes
+
+# sender side deals with congestion
+# window size determines send rate
+# adjust window to prevent congestion collapse
+
+# control the number of unACKed packets = adjust the size of the buffer 
+
+# wnd = min(cwnd, adv_wnd);
+# effective_wnd = wnd – (last_byte_sent – last_byte_acked);
+
+
+# Upon receipt of ACK: increase cwnd
+# Data was delivered, perhaps we can send faster
+# cwnd growth is proportional to RTT
+# On loss: decrease cwnd
+# Data is being lost, there must be congestion
+# Question: increase/decrease functions to use?
+
+# Maintains three variables:
+# cwnd:  congestion window
+# adv_wnd: receiver advertised window 
+# ssthresh:  threshold size (used to update cwnd)
+# For sending, use: cwnd = min(cwnd, adv_wnd)
+# Two phases of congestion control
+# Slow start (cwnd < ssthresh)
+# Probe for bottleneck bandwidth
+# Congestion avoidance (cwnd >= ssthresh)
+# AIMD
+
+# Goal: reach knee quickly
+# Upon starting (or restarting) a connection
+# cwnd =1
+# ssthresh = adv_wnd
+# Each time a segment is ACKed, cwnd++
+# Continues until…
+# ssthresh is reached
+# Or a packet is lost
+# Slow Start is not actually slow
+# cwnd increases exponentially
+
+# cwnd grows rapidly
+# Slows down when…
+# cwnd >= ssthresh
+# Or a packet drops
+
+# AIMD mode
+# ssthresh is lower-bound guess about location of the knee
+# If cwnd >= ssthresh then 
+#   each time a segment is ACKed cwnd += 1/cwnd
+# So cwnd is increased by one only if all segments have been acknowledged
+
+# Initially:
+#   cwnd = 1;
+#   ssthresh = adv_wnd;
+# New ack received:
+#   if (cwnd < ssthresh) 
+#         /* Slow Start*/
+#         cwnd = cwnd + 1;
+#   else
+#         /* Congestion Avoidance */
+#         cwnd = cwnd + 1/cwnd;
+# Timeout:
+#   /* Multiplicative decrease */
+#   ssthresh = cwnd/2;
+#   cwnd = 1;
+
+
+# Detect congestion
+# Packet dropping is most reliably signal
+# Delay-based methods are hard and risky
+# How do you detect packet drops? ACKs
+# Timeout after not receiving an ACK
+# Several duplicate ACKs in a row (ignore for now)
+# Rate adjustment algorithm
+# Modify cwnd
+# Probe for bandwidth
+# Responding to congestion
+
