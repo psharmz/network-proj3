@@ -100,7 +100,7 @@ def sendFinalPacket():
   sock.sendto(json.dumps({"eof": True, "data": "", "sequence": SEQUENCE, "ack": False}), dest)
   
   # add 1 because ack num will be seq + 1
-  SEQUENCE++
+  SEQUENCE = SEQUENCE + 1
   
   # log it, update time of last sent packet and add to unacked buffer
   log("[send data] " + str(SEQUENCE) + " (0)")
@@ -128,15 +128,21 @@ def addToUnackedBuffer(SEQUENCE, data, timeSent, resent):
  
 # implement slow start or congestion avoidance, update CWND accordingly 
 def updateCWND():
-  if (CWND < SSTHRESH)
+  global CWND
+  global SSTHRESH
+  
+  if (CWND < SSTHRESH):
     # implement slow start
     CWND = CWND + 1
-  else 
+  else:
     #implement congestion avoidance
     CWND = CWND + 1/CWND
 
 # update the congestion for when we hit the ACK timeout 
 def updateCWNDonTimeout():
+  global CWND
+  global SSTHRESH
+  
   #implement multiplicative decrease
   SSTHRESH = CWND/2
   CWND = 1;  
