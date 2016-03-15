@@ -11,12 +11,15 @@ DATA_SIZE = 1000
 TIMEOUT = 30
 SEQUENCE = 0
 
+# constants for unacked buffer entries
 DATATABLE_SEQ = 0
 DATATABLE_DATA = 1
 DATATABLE_TIMESENT = 2
+DATATABLE_RESENT = 3
 
-ACKTIMEOUT = 1
-RTO = 1
+# set default rto to 3 seconds
+RTO = 3
+RTT_ALPHA = .875
 
 # Bind to localhost and an ephemeral port
 IP_PORT = sys.argv[1]
@@ -50,7 +53,7 @@ def send_next_packet():
     else:
       log("[send data] " + str(SEQUENCE) + " (" + str(len(data)) + ")")
       timeLastPacketSent = time.time()
-      addToUnackedBuffer(SEQUENCE, data, timeLastPacketSent)
+      addToUnackedBuffer(SEQUENCE, data, timeLastPacketSent, False)
     return True
   else:
     return False
@@ -68,38 +71,61 @@ def sendFinalPacket():
   log("[send data] " + str(SEQUENCE) + " (0)")
   
   timeLastPacketSent = time.time()
-  addToUnackedBuffer(SEQUENCE, "", timeLastPacketSent)
+  addToUnackedBuffer(SEQUENCE, "", timeLastPacketSent, False)
   
 # keep track of all unacked packets  
-def addToUnackedBuffer(SEQUENCE, data, timeSent):
+def addToUnackedBuffer(SEQUENCE, data, timeSent, resent):
   global unAckedBuffer
   
   # if already in table, update the time
   for entry in unAckedBuffer:
     if entry[DATATABLE_SEQ] == SEQUENCE:
       entry[DATATABLE_TIMESENT] = timeSent
+      entry[DATATABLE_RESENT] = resent
       return
   
   # otherwise add it
-  unAckedBuffer.append([SEQUENCE, data, timeSent])
+  unAckedBuffer.append([SEQUENCE, data, timeSent, resent])
  
 # once an ack is received for a packet
 # remove it from the unacked buffer
-def removeDataFromUnackedBuffer(SEQUENCE):
+def removeDataFromUnackedBuffer():
+  global SEQUENCE
+  
   for entry in unAckedBuffer:
     if entry[DATATABLE_SEQ] == SEQUENCE:
       unAckedBuffer.remove(entry)
       return
+      
+# RTO is a moving average so
+# recalculate whenever we send a
+# packet and receive an ack without
+# having to retransmit
+def calculateRTO():
+  global SEQUENCE
+  global RTO
+  global sock
+  global unAckedBuffer
+  global RTT_ALPHA
+  
+  currentTime = time.time()
+  
+  for entry in unAckedBuffer:
+    if entry[DATATABLE_SEQ] == SEQUENCE and not entry[DATATABLE_RESENT]:
+      newSample = currentTime - entry[DATATABLE_TIMESENT]
+      newRTT = (RTT_ALPHA * (RTO / 2)) + ((1 - RTT_ALPHA) * newSample)
+      RTO = newRTT * 2
+      sock.settimeout(RTO)
+      log("New RTO " + str(RTO))
   
 # check to see if any packets were
 # dropped by checking ack timeouts    
 def checkForAckTimeouts():
   global timeLastPacketSent
   
-  #log("IN THE ACK TIMEOUT CHECKER")
   for entry in unAckedBuffer:
     # if packet dropped, resend
-    if time.time() - entry[DATATABLE_TIMESENT] >= ACKTIMEOUT:
+    if time.time() - entry[DATATABLE_TIMESENT] >= RTO:
       # sequence number is retrieved by getting current minus
       # the amount of data sent
       sequenceNum = entry[DATATABLE_SEQ] - len(entry[DATATABLE_DATA])
@@ -114,7 +140,7 @@ def checkForAckTimeouts():
       else:
         log("[send data] " + str(entry[DATATABLE_SEQ]) + " (" + str(len(entry[DATATABLE_DATA])) + ")")
         timeLastPacketSent = time.time()
-        addToUnackedBuffer(entry[DATATABLE_SEQ], entry[DATATABLE_DATA], timeLastPacketSent)
+        addToUnackedBuffer(entry[DATATABLE_SEQ], entry[DATATABLE_DATA], timeLastPacketSent, True)
 
 # keep track of unacked packets
 # seq num, data, time sent
@@ -148,7 +174,8 @@ while True:
         # If there is an ack, send next packet
         # and remove data from buffer
         if decoded['ack'] == SEQUENCE:
-          removeDataFromUnackedBuffer(SEQUENCE)
+          calculateRTO()
+          removeDataFromUnackedBuffer()
           log("[recv ack] " + str(SEQUENCE))
   
           # Try to send next packet; if no more data
@@ -168,7 +195,7 @@ while True:
     if timeLastPacketReceived != -1 and time.time() - timeLastPacketReceived >= 30:    
       log("[error] timeout")
       sys.exit(-1)
-    elif timeLastPacketSent != -1 and time.time() - timeLastPacketSent >= ACKTIMEOUT:
+    elif timeLastPacketSent != -1 and time.time() - timeLastPacketSent >= RTO:
       checkForAckTimeouts()
 
 log("[completed]")
