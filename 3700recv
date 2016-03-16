@@ -61,8 +61,8 @@ TIMEOUT = 30
 # set variables for congestion control
 
 # the reciever window size (RWS) tells us the max amount of frames 
-# that can be expected out of order. RWS = max size of recievedData {}
-RWS = 20 
+# that can be expected out of order. RWS = max size of receivedData {}
+RWS = 40 
 
 # last frame recieved seqnum
 # to see if next segment received is
@@ -149,7 +149,7 @@ while True:
 		elif (packet_sequence <= LFR or packet_sequence > LAF): 
 			log("[recv data] " + str(packet_sequence) + " (" + str(len(packet_data)) + ") IGNORED")
         
-            # store the data
+            # store the data if we have space 
             receivedData[packet_sequence] = packet_data
 
 
