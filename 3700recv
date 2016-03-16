@@ -9,10 +9,10 @@ import json
 def log(string):
   sys.stderr.write(datetime.datetime.now().strftime("%H:%M:%S.%f") + " " + string + "\n")
   
-## set the ackNumber to the sequence num
+## set the LFR to the sequence num
 def initializeAckNumber(packet_sequence):
-  global ackNumber
-  ackNumber = packet_sequence
+  global LFR
+  LFR = packet_sequence
   
 # Sort the sequence nums in dictionary
 # and print out received data
@@ -30,34 +30,48 @@ def sendAck(packetAckNumber):
   
   # if sock.sendto() is less than full size of message
   # it means the full message didn't send
-  #TODO: better checking here?
   if sock.sendto(msg, addr) < len(msg):
     log("[error] unable to fully send packet")
     
 # increment ack num by data length
 # or by 1 if it is the last packet
 def incrementAck(packet_data):
-  global ackNumber
+  global LFR
   
   if len(packet_data) > 0:
-    ackNumber += len(packet_data)
+    LFR += len(packet_data)
   else:
-    ackNumber = packet_sequence + 1
+    LFR = packet_sequence + 1
 
 # after getting final packet, send
 # ack and exit
 def closeReceiver():
-  global ackNumber
+  global LFR
   
   printReceivedData()
   incrementAck("")
-  sendAck(ackNumber)
+  sendAck(LFR)
   log("[completed]")
   sys.exit(0)
 
 # set global variables
 MSG_SIZE = 1500
 TIMEOUT = 30
+
+# set variables for congestion control
+
+# the reciever window size (RWS) tells us the max amount of frames 
+# that can be expected out of order. RWS = max size of recievedData {}
+RWS = 20 
+
+# last frame recieved seqnum
+# to see if next segment received is
+# in order or not, start at -1
+LFR  = -1
+
+# largest acceptable frame seqnum
+# LAF is always the window + LFR
+LAF = RWS + LFR
 
 # Bind to localhost and an ephemeral port
 UDP_IP = "127.0.0.1"
@@ -74,18 +88,9 @@ sock.settimeout(TIMEOUT)
 UDP_PORT = sock.getsockname()[1]
 log("[bound] " + str(UDP_PORT))
 
-# what should the buffer size be set to?
-# receivedData{} should have a maximum size if we 
-# want to implement a sliding window later. Congestion 
-# is delt with on the sender side 
-# Store the sequence numbers and 
-# corresponding data successfully received
+# This is the buffer for the unordered frames
+# The max size of receivedData is bounded by RWS
 receivedData = {}
-
-# Keep track of the last ack number
-# to see if next segment received is
-# in order or not, start at -1
-ackNumber = -1
 
 # Now listen for packets
 while True:
@@ -104,13 +109,13 @@ while True:
       
       # If it is the first packet we get, set
       # ack to sequence number
-      if (ackNumber == -1):
+      if (LFR == -1):
         initializeAckNumber(packet_sequence)
       
       # if end of packets, print out data received
       # and close receiver
       #log(str(ackNumber) + " " + str(packet_sequence))
-      if (packet_eof and ackNumber == packet_sequence):
+      if (packet_eof and LFR == packet_sequence):
         closeReceiver()
       
       # If there is data, look at it and 
@@ -124,19 +129,25 @@ while True:
             log("[recv data] " + str(packet_sequence) + " (" + str(len(packet_data)) + ") IGNORED")
             sendAck(packet_sequence + len(packet_data))
 
-	    if (ackNumber == packet_sequence):
+	    if (LFR == packet_sequence):
 	      incrementAck(packet_data)  
            
           else:
             # packet sent in order, send back ack with incremented ack number
-            if (ackNumber == packet_sequence):
+            if (LFR == packet_sequence):
               incrementAck(packet_data)
               log("[recv data] " + str(packet_sequence) + " (" + str(len(packet_data)) + ") ACCEPTED (in-order)")
-              sendAck(ackNumber)
-            # packet sent out of order, send back ack with unchanged ack number
-            elif (ackNumber != packet_sequence):
-              log("[recv data] " + str(packet_sequence) + " (" + str(len(packet_data)) + ") ACCEPTED (out-of-order)")
-              sendAck(ackNumber)
+              sendAck(LFR)
+            # packet sent out of order, see if it should be dropped or if we should accept it
+            elif (LFR != packet_sequence):
+		# if the current packet seq # is > LFR and <= LAF accept the frame
+		#  send back ack with unchanged ack number
+		if (packet_sequence > LFR and packet_sequence <= LAF):  
+	      		log("[recv data] " + str(packet_sequence) + " (" + str(len(packet_data)) + ") ACCEPTED (out-of-order)")
+              		sendAck(LFR)
+		# else if the packet sqeuence is <= LFR or packet sequence > LAF, ignore it. 
+		elif (packet_sequence <= LFR or packet_sequence > LAF): 
+			log("[recv data] " + str(packet_sequence) + " (" + str(len(packet_data)) + ") IGNORED")
         
             # store the data
             receivedData[packet_sequence] = packet_data
