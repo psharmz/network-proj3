@@ -7,7 +7,7 @@ import select
 import json
 
 MSG_SIZE = 1500
-DATA_SIZE = 1000
+DATA_SIZE = 1300
 TIMEOUT = 30
 
 # sequence is initialized at 0 but
@@ -33,19 +33,19 @@ DATATABLE_RESENT = 3
 # adv_wnd: receiver advertised window
 # *** note for later. Don't know what this is right now
 # will figure it out later
-ADV_WND = 10 
+ADV_WND = 15
 
 # cwnd:  congestion window
 # CWND = min(CWND, ADV_WIND)
 # but it is initialized to 1
-CWND = 1
+CWND = 5
 
 # ssthresh:  threshold size (used to update cwnd)
 # but initially ssthresh = adv_wnd;
 SSTHRESH = ADV_WND
 
 # set default retransmittion timeout to 3 seconds
-RTO = 3
+RTO = 2
 
 # set round time trip alpha for recalculating
 # the retransmission timeout
